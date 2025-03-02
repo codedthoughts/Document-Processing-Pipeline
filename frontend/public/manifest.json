@@ -1,0 +1,8 @@
+{
+  "short_name": "Document Processor",
+  "name": "Document Processing Pipeline",
+  "start_url": ".",
+  "display": "standalone",
+  "theme_color": "#000000",
+  "background_color": "#ffffff"
+}
