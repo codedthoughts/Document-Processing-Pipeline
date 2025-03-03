@@ -1,23 +1,9 @@
 const Tesseract = require('tesseract.js');
-const fs = require('fs');
-const path = require('path');
 const pdf = require('pdf-parse');
 const mammoth = require('mammoth');
 const { pipeline, env } = require('@xenova/transformers');
-
-// Define directory paths
-const UPLOAD_DIR = path.join(__dirname, '..', '..', 'uploads');
-const PROCESSED_DIR = path.join(UPLOAD_DIR, 'processed');
-const ORIGINAL_DIR = path.join(UPLOAD_DIR, 'original');
-const TEMP_DIR = path.join(UPLOAD_DIR, 'temp');
-
-// Ensure directories exist
-[UPLOAD_DIR, PROCESSED_DIR, ORIGINAL_DIR, TEMP_DIR].forEach(dir => {
-    if (!fs.existsSync(dir)) {
-        fs.mkdirSync(dir, { recursive: true });
-        console.log(`📁 Created directory: ${dir}`);
-    }
-});
+const { uploadToS3 } = require('../config/s3');
+const { redis } = require('../config/redis');
 
 // Suppress ONNX warnings about unused initializers
 env.quiet = true;
@@ -43,52 +29,37 @@ async function initializeSummarizer() {
     }
 }
 
-async function processDocument(filePath, fileType, fileName) {
+async function processDocument(file, userId) {
     let text = '';
-    console.log(`\n📄 Processing document: ${fileName}`);
-    console.log(`📋 File type: ${fileType}`);
+    console.log(`\n📄 Processing document: ${file.originalname}`);
+    console.log(`📋 File type: ${file.mimetype}`);
 
     try {
-        // First, move the uploaded file to the original directory
-        const originalFilePath = path.join(ORIGINAL_DIR, fileName);
-        
-        // Check if the file exists in temp or original directory
-        if (fs.existsSync(filePath)) {
-            console.log(`📦 Moving file from temp to original directory: ${originalFilePath}`);
-            fs.copyFileSync(filePath, originalFilePath);
-        } else if (!fs.existsSync(originalFilePath)) {
-            throw new Error(`File not found in temp or original directory: ${fileName}`);
-        } else {
-            console.log(`📁 File already exists in original directory: ${originalFilePath}`);
-        }
-        
         console.log('🔍 Extracting text from document...');
         const startExtract = Date.now();
 
-        // Always read from the original file path
-        switch (fileType) {
+        switch (file.mimetype) {
             case 'application/pdf':
                 console.log('📚 Reading PDF content...');
-                const dataBuffer = fs.readFileSync(originalFilePath);
-                const pdfData = await pdf(dataBuffer);
+                const pdfData = await pdf(file.buffer);
                 text = pdfData.text;
                 break;
 
             case 'text/plain':
                 console.log('📝 Reading text file...');
-                text = fs.readFileSync(originalFilePath, 'utf8');
+                text = file.buffer.toString('utf8');
                 break;
 
             case 'application/vnd.openxmlformats-officedocument.wordprocessingml.document':
                 console.log('📘 Reading Word document...');
-                const result = await mammoth.extractRawText({ path: originalFilePath });
+                const result = await mammoth.extractRawText({ buffer: file.buffer });
                 text = result.value;
                 break;
 
             case 'image/jpeg':
             case 'image/png':
                 console.log('🖼️ Performing OCR on image...');
-                const { data: { text: ocrText } } = await Tesseract.recognize(originalFilePath);
+                const { data: { text: ocrText } } = await Tesseract.recognize(file.buffer);
                 text = ocrText;
                 break;
 
@@ -104,20 +75,11 @@ async function processDocument(filePath, fileType, fileName) {
         console.log('\n🤖 Starting text summarization...');
         const summary = await generateBartSummary(text);
 
-        // Store processed file
-        console.log('\n💾 Storing processed file...');
-        const fileUrl = await storeProcessedFile(originalFilePath, fileName);
-        console.log('✅ File stored successfully!');
-
-        // Clean up the temporary upload file if it exists
-        if (fs.existsSync(filePath)) {
-            try {
-                fs.unlinkSync(filePath);
-                console.log('🧹 Cleaned up temporary file');
-            } catch (err) {
-                console.warn('⚠️ Could not delete temporary upload file:', err);
-            }
-        }
+        // Upload processed file to S3
+        console.log('\n💾 Uploading processed file to S3...');
+        const processedKey = `${userId}/processed/${Date.now()}-${file.originalname}`;
+        const fileUrl = await uploadToS3(file, processedKey);
+        console.log('✅ File uploaded successfully!');
 
         return {
             text,
@@ -202,53 +164,34 @@ function generateBasicSummary(text) {
         return text;
     }
 
-    const importantSentences = sentences
-        .map((sentence, index) => ({
-            sentence: sentence.trim(),
-            score: scoreSentence(sentence, index, sentences.length)
-        }))
-        .sort((a, b) => b.score - a.score)
-        .slice(0, Math.max(5, Math.ceil(sentences.length * 0.3)))
-        .sort((a, b) => sentences.indexOf(a.sentence) - sentences.indexOf(b.sentence))
-        .map(item => item.sentence);
+    const scores = sentences.map((sentence, index) => ({
+        sentence,
+        score: scoreSentence(sentence, index, sentences.length)
+    }));
 
-    console.log(`✅ Generated basic summary with ${importantSentences.length} sentences`);
-    return importantSentences.join('. ') + '.';
+    scores.sort((a, b) => b.score - a.score);
+    const topSentences = scores.slice(0, 5).map(s => s.sentence);
+    
+    console.log(`📊 Generated summary with ${topSentences.length} sentences`);
+    return topSentences.join('. ') + '.';
 }
 
 function scoreSentence(sentence, index, totalSentences) {
     let score = 0;
     
-    if (index < totalSentences * 0.2 || index > totalSentences * 0.8) {
-        score += 0.3;
-    }
-
-    const words = sentence.split(/\s+/).length;
-    if (words > 5 && words < 25) {
-        score += 0.3;
-    }
-
-    const keywords = ['important', 'significant', 'therefore', 'conclusion', 'summary', 'result', 'key', 'main'];
-    score += keywords.filter(keyword => 
-        sentence.toLowerCase().includes(keyword)
-    ).length * 0.1;
-
+    // Prefer sentences at the start and end of the document
+    if (index < totalSentences * 0.2) score += 3;
+    if (index > totalSentences * 0.8) score += 2;
+    
+    // Prefer longer, more informative sentences
+    const words = sentence.split(/\s+/);
+    if (words.length > 5 && words.length < 25) score += 2;
+    
+    // Prefer sentences with important indicators
+    const indicators = ['important', 'significant', 'key', 'main', 'crucial', 'essential'];
+    if (indicators.some(word => sentence.toLowerCase().includes(word))) score += 2;
+    
     return score;
-}
-
-async function storeProcessedFile(filePath, fileName) {
-    const processedFilePath = path.join(PROCESSED_DIR, fileName);
-
-    try {
-        fs.copyFileSync(filePath, processedFilePath);
-        console.log(`📁 Stored processed file: ${processedFilePath}`);
-    } catch (error) {
-        console.error('❌ Error storing processed file:', error);
-        throw error;
-    }
-
-    // Return URL that points to the processed file
-    return `/uploads/processed/${fileName}`;
 }
 
 module.exports = {

@@ -2,7 +2,7 @@ import React, { useState, useEffect, useCallback } from 'react';
 import { useAuth } from '../context/AuthContext';
 import axios from 'axios';
 
-const API_URL = 'http://localhost:3000/api';
+const API_URL = 'http://localhost:8000/api';
 const POLLING_INTERVAL = 3000; // Poll every 3 seconds
 
 function Dashboard() {
@@ -206,10 +206,10 @@ function Dashboard() {
                 <>
                   <p>Summary: {doc.summary}</p>
                   <div className="document-links">
-                    <a href={`http://localhost:3000${doc.processedUrl}`} target="_blank" rel="noopener noreferrer">
+                    <a href={`http://localhost:8000${doc.processedUrl}`} target="_blank" rel="noopener noreferrer">
                       View Processed Document
                     </a>
-                    <a href={`http://localhost:3000${doc.originalUrl}`} target="_blank" rel="noopener noreferrer">
+                    <a href={`http://localhost:8000${doc.originalUrl}`} target="_blank" rel="noopener noreferrer">
                       View Original Document
                     </a>
                   </div>

@@ -3,7 +3,7 @@ import { useNavigate, Link } from 'react-router-dom';
 import { useAuth } from '../context/AuthContext';
 import axios from 'axios';
 
-const API_URL = 'http://localhost:3000/api';
+const API_URL = 'http://localhost:8000/api';
 
 function Register() {
   const [name, setName] = useState('');
@@ -16,22 +16,25 @@ function Register() {
   const handleSubmit = async (e) => {
     e.preventDefault();
     try {
+      console.log('Sending registration data:', { name, email, password });
       const response = await axios.post(`${API_URL}/auth/register`, {
         name,
         email,
         password
       });
+      console.log('Registration response:', response.data);
       login(response.data.token);
       navigate('/');
     } catch (err) {
-      setError(err.response?.data?.message || 'An error occurred');
+      console.error('Registration error:', err.response?.data || err.message);
+      setError(err.response?.data?.message || err.response?.data?.errors?.[0]?.msg || 'An error occurred');
     }
   };
 
   return (
     <div className="auth-container">
       <h2>Register</h2>
-      {error && <div className="error">{error}</div>}
+      {error && <div className="error" style={{color: 'red', marginBottom: '10px'}}>{error}</div>}
       <form onSubmit={handleSubmit}>
         <div>
           <input

@@ -10,30 +10,31 @@ const documentSchema = new mongoose.Schema({
         type: String,
         required: true
     },
-    fileName: {
-        type: String,
-        required: true
-    },
-    fileType: {
-        type: String,
-        required: true
-    },
-    text: {
-        type: String
-    },
-    summary: {
-        type: String
-    },
     originalUrl: {
-        type: String
+        type: String,
+        default: null
     },
     processedUrl: {
         type: String
     },
     status: {
         type: String,
-        enum: ['processing', 'completed', 'failed'],
-        default: 'processing'
+        enum: ['pending', 'uploaded', 'processing', 'completed', 'failed'],
+        default: 'pending'
+    },
+    mimeType: {
+        type: String,
+        required: true
+    },
+    size: {
+        type: Number,
+        required: true
+    },
+    summary: {
+        type: String
+    },
+    text: {
+        type: String
     },
     error: {
         type: String
@@ -42,7 +43,8 @@ const documentSchema = new mongoose.Schema({
     timestamps: true
 });
 
-// Add text index for search functionality
-documentSchema.index({ text: 'text', summary: 'text' });
+// Create indexes for better search performance
+documentSchema.index({ originalName: 'text', summary: 'text' });
 
-module.exports = mongoose.model('Document', documentSchema);
+const Document = mongoose.model('Document', documentSchema);
+module.exports = Document;
